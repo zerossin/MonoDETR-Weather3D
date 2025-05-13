@@ -69,16 +69,20 @@ class Tester(object):
         results = {}
         progress_bar = tqdm.tqdm(total=len(self.dataloader), leave=True, desc='Evaluation Progress')
         model_infer_time = 0
+        
         for batch_idx, (inputs, calibs, targets, info) in enumerate(self.dataloader):
+            # clean/foggy 이미지 처리
+            if isinstance(inputs, (tuple, list)):
+                # student 모델 평가시에는 foggy 이미지 사용
+                inputs = inputs[1]  # foggy image
+                
             # load evaluation data and move data to GPU.
             inputs = inputs.to(self.device)
             calibs = calibs.to(self.device)
             img_sizes = info['img_size'].to(self.device)
 
             start_time = time.time()
-            ###dn
-            outputs = self.model(inputs, calibs, targets, img_sizes, dn_args = 0)
-            ###
+            outputs = self.model(inputs, calibs, targets, img_sizes, dn_args=0)
             end_time = time.time()
             model_infer_time += end_time - start_time
 

@@ -44,41 +44,55 @@ def main():
     # build dataloader
     train_loader, test_loader = build_dataloader(cfg['dataset'])
 
-    # build model
-    model, loss = build_model(cfg['model'])
+    # build student and teacher models
+    student_model, loss_fn = build_model(cfg['model'])
+    teacher_model, _ = build_model(cfg['model'])
+    teacher_ckpt_path = cfg['trainer'].get('teacher_ckpt', None)
+
+    if teacher_ckpt_path:
+        ckpt = torch.load(teacher_ckpt_path, map_location='cpu')
+        teacher_model.load_state_dict(ckpt['model_state'], strict=False)
+        teacher_model.eval()
+        for p in teacher_model.parameters():
+            p.requires_grad = False
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     gpu_ids = list(map(int, cfg['trainer']['gpu_ids'].split(',')))
 
-    if len(gpu_ids) == 1:
-        model = model.to(device)
-    else:
-        model = torch.nn.DataParallel(model, device_ids=gpu_ids).to(device)
+    student_model = student_model.to(device)
+    teacher_model = teacher_model.to(device)
+
+    if len(gpu_ids) > 1:
+        student_model = torch.nn.DataParallel(student_model, device_ids=gpu_ids).to(device)
+        teacher_model = torch.nn.DataParallel(teacher_model, device_ids=gpu_ids).to(device)
 
     if args.evaluate_only:
         logger.info('###################  Evaluation Only  ##################')
         tester = Tester(cfg=cfg['tester'],
-                        model=model,
+                        model=student_model,
                         dataloader=test_loader,
                         logger=logger,
                         train_cfg=cfg['trainer'],
                         model_name=model_name)
         tester.test()
         return
-    #ipdb.set_trace()
-    #  build optimizer
-    optimizer = build_optimizer(cfg['optimizer'], model)
+
+    # build optimizer
+    optimizer = build_optimizer(cfg['optimizer'], student_model)
     # build lr scheduler
     lr_scheduler, warmup_lr_scheduler = build_lr_scheduler(cfg['lr_scheduler'], optimizer, last_epoch=-1)
 
+    # create trainer
     trainer = Trainer(cfg=cfg['trainer'],
-                      model=model,
+                      model=student_model,
+                      teacher_model=teacher_model,
                       optimizer=optimizer,
                       train_loader=train_loader,
                       test_loader=test_loader,
                       lr_scheduler=lr_scheduler,
                       warmup_lr_scheduler=warmup_lr_scheduler,
                       logger=logger,
-                      loss=loss,
+                      loss=loss_fn,
                       model_name=model_name)
 
     tester = Tester(cfg=cfg['tester'],

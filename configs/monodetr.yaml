@@ -3,7 +3,8 @@ random_seed: 444
 
 dataset:
   type: &dataset_type 'KITTI'
-  root_dir: 'data/KITTIDataset'
+  root_dir: '/local_datasets/KITTIDataset'
+  foggy_root_dir: '/local_datasets/KITTIDataset_foggy'
   train_split: 'train'
   test_split: 'val'
   batch_size: 16
@@ -108,13 +109,16 @@ trainer:
   save_frequency: 1  # checkpoint save interval (in epoch)
   # resume_model: True
   # pretrain_model: path/to/ckpt
-  save_path: 'outputs/'
+  save_path: 'outputs/test_195ep'
   save_all: False  # False for only savng the best and latest ckpts
   use_dn: False
   scalar: 5
   label_noise_scale: 0.2
   box_noise_scale: 0.4
   num_patterns: 0
+
+  teacher_ckpt: 'outputs/normal_195ep/monodetr/checkpoint_best.pth'
+  lambda_distill: 1.0
 
 tester:
   type: *dataset_type

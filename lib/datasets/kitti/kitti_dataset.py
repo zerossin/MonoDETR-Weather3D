@@ -24,6 +24,12 @@ class KITTI_Dataset(data.Dataset):
 
         # basic configuration
         self.root_dir = cfg.get('root_dir')
+        #추가
+        self.foggy_root_dir = cfg.get('foggy_root_dir', None)
+        if self.foggy_root_dir is not None:
+            foggy_data_dir = os.path.join(self.foggy_root_dir, 'testing' if split == 'test' else 'training')
+            self.foggy_image_dir = os.path.join(foggy_data_dir, 'image_2')
+
         self.split = split
         self.num_classes = 3
         self.max_objs = 50
@@ -87,6 +93,12 @@ class KITTI_Dataset(data.Dataset):
         img_file = os.path.join(self.image_dir, '%06d.png' % idx)
         assert os.path.exists(img_file)
         return Image.open(img_file)    # (H, W, 3) RGB mode
+    
+    #추가
+    def get_foggy_image(self, idx):
+        img_file = os.path.join(self.foggy_image_dir, '%06d.png' % idx)
+        assert os.path.exists(img_file)
+        return Image.open(img_file)
 
     def get_label(self, idx):
         label_file = os.path.join(self.label_dir, '%06d.txt' % idx)
@@ -122,8 +134,9 @@ class KITTI_Dataset(data.Dataset):
         #  ============================   get inputs   ===========================
         index = int(self.idx_list[item])  # index mapping, get real data id
         # image loading
-        img = self.get_image(index)
-        img_size = np.array(img.size)
+        img_clean = self.get_image(index)
+        img_foggy = self.get_foggy_image(index) if self.foggy_root_dir is not None else img_clean.copy()
+        img_size = np.array(img_clean.size)
         features_size = self.resolution // self.downsample    # W * H
 
         # data augmentation for image
@@ -134,13 +147,18 @@ class KITTI_Dataset(data.Dataset):
         if self.data_augmentation:
 
             if self.aug_pd:
-                img = np.array(img).astype(np.float32)
-                img = self.pd(img).astype(np.uint8)
-                img = Image.fromarray(img)
+                img_clean = np.array(img_clean).astype(np.float32)
+                img_clean = self.pd(img_clean).astype(np.uint8)
+                img_clean = Image.fromarray(img_clean)
+
+                img_foggy = np.array(img_foggy).astype(np.float32)
+                img_foggy = self.pd(img_foggy).astype(np.uint8)
+                img_foggy = Image.fromarray(img_foggy)
 
             if np.random.random() < self.random_flip:
                 random_flip_flag = True
-                img = img.transpose(Image.FLIP_LEFT_RIGHT)
+                img_clean = img_clean.transpose(Image.FLIP_LEFT_RIGHT)
+                img_foggy = img_foggy.transpose(Image.FLIP_LEFT_RIGHT)
             
             if self.aug_crop:
                 if np.random.random() < self.random_crop:
@@ -152,15 +170,23 @@ class KITTI_Dataset(data.Dataset):
 
         # add affine transformation for 2d images.
         trans, trans_inv = get_affine_transform(center, crop_size, 0, self.resolution, inv=1)
-        img = img.transform(tuple(self.resolution.tolist()),
-                            method=Image.AFFINE,
-                            data=tuple(trans_inv.reshape(-1).tolist()),
-                            resample=Image.BILINEAR)
+        img_clean = img_clean.transform(tuple(self.resolution.tolist()),
+                                        method=Image.AFFINE,
+                                        data=tuple(trans_inv.reshape(-1).tolist()),
+                                        resample=Image.BILINEAR)
+        img_foggy = img_foggy.transform(tuple(self.resolution.tolist()),
+                                        method=Image.AFFINE,
+                                        data=tuple(trans_inv.reshape(-1).tolist()),
+                                        resample=Image.BILINEAR)
 
         # image encoding
-        img = np.array(img).astype(np.float32) / 255.0
-        img = (img - self.mean) / self.std
-        img = img.transpose(2, 0, 1)  # C * H * W
+        img_clean = np.array(img_clean).astype(np.float32) / 255.0
+        img_clean = (img_clean - self.mean) / self.std
+        img_clean = img_clean.transpose(2, 0, 1)  # C * H * W
+
+        img_foggy = np.array(img_foggy).astype(np.float32) / 255.0
+        img_foggy = (img_foggy - self.mean) / self.std
+        img_foggy = img_foggy.transpose(2, 0, 1)  # C * H * W
 
         info = {'img_id': index,
                 'img_size': img_size,
@@ -168,7 +194,7 @@ class KITTI_Dataset(data.Dataset):
 
         if self.split == 'test':
             calib = self.get_calib(index)
-            return img, calib.P2, img, info
+            return (img_clean, img_foggy), calib.P2, info
 
         #  ============================   get labels   ==============================
         objects = self.get_label(index)
@@ -308,7 +334,7 @@ class KITTI_Dataset(data.Dataset):
             calibs[i] = calib.P2
 
         # collect return data
-        inputs = img
+        inputs = (img_clean, img_foggy)
         targets = {
                    'calibs': calibs,
                    'indices': indices,

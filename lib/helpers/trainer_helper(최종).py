@@ -195,26 +195,68 @@ class Trainer(object):
                 foggy_losses_dict = self.detr_loss(student_outputs_foggy, targets_list)
                 foggy_losses = sum([foggy_losses_dict[k] * weight_dict[k] for k in foggy_losses_dict if k in weight_dict])
             
-            # 5.3. Distillation loss (조건부) - 단순 버전
+            # 5.3. Distillation loss (조건부)
             distill_loss = 0
             if use_teacher and teacher_outputs is not None:
                 student_outputs = student_outputs_foggy if use_foggy else student_outputs_clean
                 
-                # 최종 레이어만 간단히 비교
+                # Auxiliary layers distillation
+                if 'aux_outputs' in teacher_outputs and 'aux_outputs' in student_outputs:
+                    teacher_aux = teacher_outputs['aux_outputs']
+                    student_aux = student_outputs['aux_outputs']
+                    min_layers = min(len(teacher_aux), len(student_aux))
+                    
+                    for i in range(min_layers):
+                        if 'pred_logits' in teacher_aux[i] and 'pred_logits' in student_aux[i]:
+                            t_logits = teacher_aux[i]['pred_logits']
+                            s_logits = student_aux[i]['pred_logits']
+                            
+                            if t_logits.shape[1] != s_logits.shape[1]:
+                                min_queries = min(t_logits.shape[1], s_logits.shape[1])
+                                t_logits = t_logits[:, :min_queries, :]
+                                s_logits = s_logits[:, :min_queries, :]
+                            
+                            distill_loss += torch.nn.functional.mse_loss(s_logits, t_logits)
+                        
+                        if 'pred_boxes' in teacher_aux[i] and 'pred_boxes' in student_aux[i]:
+                            t_boxes = teacher_aux[i]['pred_boxes']
+                            s_boxes = student_aux[i]['pred_boxes']
+                            
+                            if t_boxes.shape[1] != s_boxes.shape[1]:
+                                min_queries = min(t_boxes.shape[1], s_boxes.shape[1])
+                                t_boxes = t_boxes[:, :min_queries, :]
+                                s_boxes = s_boxes[:, :min_queries, :]
+                            
+                            distill_loss += torch.nn.functional.mse_loss(s_boxes, t_boxes)
+                
+                # Final layer distillation
                 student_logits = student_outputs["pred_logits"]
                 if isinstance(student_logits, list):
                     student_logits = student_logits[-1]
                     
                 teacher_logits = teacher_outputs["pred_logits"]
                 
-                # Shape 맞추기 (최소한의 처리)
                 if teacher_logits.shape[1] != student_logits.shape[1]:
                     min_queries = min(teacher_logits.shape[1], student_logits.shape[1])
                     teacher_logits = teacher_logits[:, :min_queries, :]
                     student_logits = student_logits[:, :min_queries, :]
                 
-                # 단순 MSE loss
-                distill_loss = torch.nn.functional.mse_loss(student_logits, teacher_logits)
+                distill_loss += torch.nn.functional.mse_loss(student_logits, teacher_logits)
+                
+                # Box distillation
+                if 'pred_boxes' in teacher_outputs and 'pred_boxes' in student_outputs:
+                    teacher_boxes = teacher_outputs['pred_boxes']
+                    student_boxes = student_outputs['pred_boxes']
+                    
+                    if isinstance(student_boxes, list):
+                        student_boxes = student_boxes[-1]
+                    
+                    if teacher_boxes.shape[1] != student_boxes.shape[1]:
+                        min_queries = min(teacher_boxes.shape[1], student_boxes.shape[1])
+                        teacher_boxes = teacher_boxes[:, :min_queries, :]
+                        student_boxes = student_boxes[:, :min_queries, :]
+                    
+                    distill_loss += torch.nn.functional.mse_loss(student_boxes, teacher_boxes)
 
             # 6. Total loss
             total_loss = (alpha * clean_losses + 

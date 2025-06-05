@@ -122,18 +122,9 @@ class Trainer(object):
 
         progress_bar = tqdm.tqdm(total=len(self.train_loader), leave=(self.epoch+1 == self.cfg['max_epoch']), desc='iters')
         for batch_idx, (inputs, calibs, targets, info) in enumerate(self.train_loader):
-            
-            # 1. 입력 데이터 처리 - 모드별 대응
-            if isinstance(inputs, (tuple, list)) and len(inputs) == 2:
-                imgs_clean, imgs_foggy = inputs
-            else:
-                imgs_clean = inputs
-                imgs_foggy = None
-            
+            imgs_clean, imgs_foggy = inputs  # inputs를 분리
             imgs_clean = imgs_clean.to(self.device)
-            if imgs_foggy is not None:
-                imgs_foggy = imgs_foggy.to(self.device)
-            
+            imgs_foggy = imgs_foggy.to(self.device)
             calibs = calibs.to(self.device)
             img_sizes = targets['img_size'].to(self.device)
 
@@ -142,6 +133,7 @@ class Trainer(object):
                 for k in t.keys():
                     t[k] = t[k].to(self.device)
 
+            # DN 설정 (원본 코드 유지)
             dn_args = None
             if self.cfg.get("use_dn", False):
                 dn_args = (targets_list, self.cfg['scalar'], self.cfg['label_noise_scale'], 
@@ -149,104 +141,129 @@ class Trainer(object):
 
             self.optimizer.zero_grad()
             
-            # 2. 모드별 설정 확인
-            use_teacher = (self.teacher_model is not None and 
-                          self.cfg.get('lambda_distill', 0.0) > 0)
-            use_foggy = imgs_foggy is not None  # foggy 이미지가 있으면 사용
+            # 1. Teacher (clean 이미지) - frozen  
+            with torch.no_grad():
+                teacher_outputs = self.teacher_model(imgs_clean, calibs, targets_list, img_sizes, dn_args=dn_args)
             
-            lambda_distill = self.cfg.get('lambda_distill', 0.0)
-            
-            # 자동 가중치 조정 - 원래 균형 유지
-            if use_teacher and use_foggy:
-                # Teacher-Student + Multi-domain: 균형 유지
-                alpha = self.cfg.get('clean_weight', 0.5)
-                beta = self.cfg.get('foggy_weight', 0.5)
-            elif use_foggy:
-                # Multi-domain only: 균형
-                alpha = self.cfg.get('clean_weight', 0.5)
-                beta = self.cfg.get('foggy_weight', 0.5)
-            else:
-                # Clean only
-                alpha = self.cfg.get('clean_weight', 1.0)
-                beta = self.cfg.get('foggy_weight', 0.0)
-            
-            # 3. Teacher 모델 실행 (조건부)
-            teacher_outputs = None
-            if use_teacher:
-                with torch.no_grad():
-                    teacher_outputs = self.teacher_model(imgs_clean, calibs, targets_list, img_sizes, dn_args=dn_args)
-            
-            # 4. Student 모델 실행
+            # 2. Student - 두 도메인 모두 학습
             student_outputs_clean = self.model(imgs_clean, calibs, targets_list, img_sizes, dn_args=dn_args)
+            student_outputs_foggy = self.model(imgs_foggy, calibs, targets_list, img_sizes, dn_args=dn_args)
             
-            student_outputs_foggy = None
-            if use_foggy:
-                student_outputs_foggy = self.model(imgs_foggy, calibs, targets_list, img_sizes, dn_args=dn_args)
-            
-            # 5. Loss 계산
-            # 5.1. Clean domain detection loss
+            # 3. Losses
+            # 3.1. Clean domain detection loss
             clean_losses_dict = self.detr_loss(student_outputs_clean, targets_list)
             weight_dict = self.detr_loss.weight_dict
             clean_losses = sum([clean_losses_dict[k] * weight_dict[k] for k in clean_losses_dict if k in weight_dict])
             
-            # 5.2. Foggy domain detection loss (조건부)
-            foggy_losses = 0
-            if use_foggy and student_outputs_foggy is not None:
-                foggy_losses_dict = self.detr_loss(student_outputs_foggy, targets_list)
-                foggy_losses = sum([foggy_losses_dict[k] * weight_dict[k] for k in foggy_losses_dict if k in weight_dict])
+            # 3.2. Foggy domain detection loss
+            foggy_losses_dict = self.detr_loss(student_outputs_foggy, targets_list)
+            foggy_losses = sum([foggy_losses_dict[k] * weight_dict[k] for k in foggy_losses_dict if k in weight_dict])
             
-            # 5.3. Distillation loss (조건부) - 단순 버전
-            distill_loss = 0
-            if use_teacher and teacher_outputs is not None:
-                student_outputs = student_outputs_foggy if use_foggy else student_outputs_clean
-                
-                # 최종 레이어만 간단히 비교
-                student_logits = student_outputs["pred_logits"]
-                if isinstance(student_logits, list):
-                    student_logits = student_logits[-1]
-                    
-                teacher_logits = teacher_outputs["pred_logits"]
-                
-                # Shape 맞추기 (최소한의 처리)
-                if teacher_logits.shape[1] != student_logits.shape[1]:
-                    min_queries = min(teacher_logits.shape[1], student_logits.shape[1])
-                    teacher_logits = teacher_logits[:, :min_queries, :]
-                    student_logits = student_logits[:, :min_queries, :]
-                
-                # 단순 MSE loss
-                distill_loss = torch.nn.functional.mse_loss(student_logits, teacher_logits)
+            # 3.3. Distillation loss (Teacher vs Student foggy)
+            distill_loss = 0  # 초기화
+            lambda_distill = self.cfg.get('lambda_distill', 1.0)  # 정의
 
-            # 6. Total loss
+            student_outputs = student_outputs_foggy  # 기존 distillation 코드를 위해
+            
+            # (a) 중간 디코더 레이어들 (aux_outputs)
+            if 'aux_outputs' in teacher_outputs and 'aux_outputs' in student_outputs:
+                teacher_aux = teacher_outputs['aux_outputs']
+                student_aux = student_outputs['aux_outputs']
+                
+                # 레이어 수 맞추기 (작은 쪽에 맞춤)
+                min_layers = min(len(teacher_aux), len(student_aux))
+                
+                for i in range(min_layers):
+                    # 분류 logits distillation
+                    if 'pred_logits' in teacher_aux[i] and 'pred_logits' in student_aux[i]:
+                        t_logits = teacher_aux[i]['pred_logits']
+                        s_logits = student_aux[i]['pred_logits']
+                        
+                        # 크기 체크 추가
+                        if t_logits.shape[1] != s_logits.shape[1]:
+                            min_queries = min(t_logits.shape[1], s_logits.shape[1])
+                            t_logits = t_logits[:, :min_queries, :]
+                            s_logits = s_logits[:, :min_queries, :]
+                        
+                        distill_loss += torch.nn.functional.mse_loss(s_logits, t_logits)
+                    
+                    # 박스 예측 distillation
+                    if 'pred_boxes' in teacher_aux[i] and 'pred_boxes' in student_aux[i]:
+                        t_boxes = teacher_aux[i]['pred_boxes']
+                        s_boxes = student_aux[i]['pred_boxes']
+                        
+                        # 크기 체크 추가
+                        if t_boxes.shape[1] != s_boxes.shape[1]:
+                            min_queries = min(t_boxes.shape[1], s_boxes.shape[1])
+                            t_boxes = t_boxes[:, :min_queries, :]
+                            s_boxes = s_boxes[:, :min_queries, :]
+                        
+                        distill_loss += torch.nn.functional.mse_loss(s_boxes, t_boxes)
+            
+            # (b) 최종 레이어
+            if isinstance(student_outputs["pred_logits"], list):
+                student_logits = student_outputs["pred_logits"][-1]
+            else:
+                student_logits = student_outputs["pred_logits"]
+                
+            teacher_logits = teacher_outputs["pred_logits"]
+            
+            # 크기 체크 후 최종 레이어 distillation
+            if teacher_logits.shape[1] != student_logits.shape[1]:
+                min_queries = min(teacher_logits.shape[1], student_logits.shape[1])
+                teacher_logits = teacher_logits[:, :min_queries, :]
+                student_logits = student_logits[:, :min_queries, :]
+            
+            distill_loss += torch.nn.functional.mse_loss(student_logits, teacher_logits)
+            
+            # 최종 박스 예측도 distillation
+            if 'pred_boxes' in teacher_outputs and 'pred_boxes' in student_outputs:
+                teacher_boxes = teacher_outputs['pred_boxes']
+                student_boxes = student_outputs['pred_boxes']
+                
+                if isinstance(student_boxes, list):
+                    student_boxes = student_boxes[-1]
+                
+                # 크기 맞추기
+                if teacher_boxes.shape[1] != student_boxes.shape[1]:
+                    min_queries = min(teacher_boxes.shape[1], student_boxes.shape[1])
+                    teacher_boxes = teacher_boxes[:, :min_queries, :]
+                    student_boxes = student_boxes[:, :min_queries, :]
+                
+                distill_loss += torch.nn.functional.mse_loss(student_boxes, teacher_boxes)
+            
+            # (c) 인코더 특징 distillation (선택사항)
+            if 'enc_outputs' in teacher_outputs and 'enc_outputs' in student_outputs:
+                distill_loss += torch.nn.functional.mse_loss(
+                    student_outputs['enc_outputs'], 
+                    teacher_outputs['enc_outputs']
+                )
+            
+            # 3.3. Total loss
+            alpha = self.cfg.get('clean_weight', 0.5)  # Clean 가중치
+            beta = self.cfg.get('foggy_weight', 0.5)   # Foggy 가중치
+            
             total_loss = (alpha * clean_losses + 
-                        beta * foggy_losses + 
-                        lambda_distill * distill_loss)
+                         beta * foggy_losses + 
+                         lambda_distill * distill_loss)
 
             total_loss.backward()
             self.optimizer.step()
 
-            # 7. 로깅
+            # 디버깅 정보를 logger로 출력
             if batch_idx == 0:
-                mode_str = []
-                if use_teacher: mode_str.append("Teacher-Student")
-                if use_foggy: mode_str.append("Multi-domain")
-                if not use_teacher and not use_foggy: mode_str.append("Clean-only")
-                
-                self.logger.info(f"🔍 Mode: {' + '.join(mode_str) if mode_str else 'Clean-only'}")
-                self.logger.info(f"🔍 Use teacher: {use_teacher}")
-                self.logger.info(f"🔍 Use foggy: {use_foggy}")
+                self.logger.info(f"🔍 Teacher exists: {self.teacher_model is not None}")
+                self.logger.info(f"🔍 Lambda distill: {lambda_distill}")
                 self.logger.info(f"🔍 Clean weight: {alpha}")
                 self.logger.info(f"🔍 Foggy weight: {beta}")
-                self.logger.info(f"🔍 Lambda distill: {lambda_distill}")
                 
-                self.logger.info(f"🔍 Clean detection loss: {clean_losses.item():.4f}")
-                if use_foggy:
+                if self.teacher_model is not None:
+                    self.logger.info(f"🔍 Clean detection loss: {clean_losses.item():.4f}")
                     self.logger.info(f"🔍 Foggy detection loss: {foggy_losses.item():.4f}")
-                if use_teacher:
                     self.logger.info(f"🔍 Distillation loss: {distill_loss.item():.4f}")
-                self.logger.info(f"🔍 Total loss: {total_loss.item():.4f}")
+                    self.logger.info(f"🔍 Total loss: {total_loss.item():.4f}")
             
             progress_bar.update()
-        
         progress_bar.close()
 
     def prepare_targets(self, targets, batch_size):

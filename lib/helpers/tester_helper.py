@@ -62,20 +62,42 @@ class Tester(object):
                 self.inference()
                 self.evaluate()
 
-    def inference(self):
+    def inference(self, eval_mode='both'):
+        """
+        eval_mode: 'clean', 'foggy', 'both'
+        """
         torch.set_grad_enabled(False)
         self.model.eval()
 
+        if eval_mode == 'both':
+            # Clean과 Foggy 둘 다 평가
+            self.logger.info('==> Evaluating on CLEAN images...')
+            clean_result = self._inference_single('clean')
+            
+            self.logger.info('==> Evaluating on FOGGY images...')
+            foggy_result = self._inference_single('foggy')
+            
+            return {'clean': clean_result, 'foggy': foggy_result}
+        else:
+            return self._inference_single(eval_mode)
+
+    def _inference_single(self, image_type='foggy'):
+        """
+        image_type: 'clean' or 'foggy'
+        """
         results = {}
-        progress_bar = tqdm.tqdm(total=len(self.dataloader), leave=True, desc='Evaluation Progress')
+        progress_bar = tqdm.tqdm(total=len(self.dataloader), leave=True, 
+                               desc=f'Evaluation Progress ({image_type.upper()})')
         model_infer_time = 0
         
         for batch_idx, (inputs, calibs, targets, info) in enumerate(self.dataloader):
-            # clean/foggy 이미지 처리
+            # clean/foggy 이미지 선택
             if isinstance(inputs, (tuple, list)):
-                # student 모델 평가시에는 foggy 이미지 사용
-                inputs = inputs[1]  # foggy image
-                
+                if image_type == 'clean':
+                    inputs = inputs[0]  # clean image
+                else:  # foggy
+                    inputs = inputs[1]  # foggy image
+            
             # load evaluation data and move data to GPU.
             inputs = inputs.to(self.device)
             calibs = calibs.to(self.device)
@@ -87,7 +109,6 @@ class Tester(object):
             model_infer_time += end_time - start_time
 
             dets = extract_dets_from_outputs(outputs=outputs, K=self.max_objs, topk=self.cfg['topk'])
-
             dets = dets.detach().cpu().numpy()
 
             # get corresponding calibs & transform tensor to numpy
@@ -106,15 +127,19 @@ class Tester(object):
 
         print("inference on {} images by {}/per image".format(
             len(self.dataloader), model_infer_time / len(self.dataloader)))
-
         progress_bar.close()
 
         # save the result for evaluation.
-        self.logger.info('==> Saving ...')
-        self.save_results(results)
+        self.logger.info(f'==> Saving {image_type.upper()} results...')
+        self.save_results(results, suffix=image_type)
+        return results
 
-    def save_results(self, results):
-        output_dir = os.path.join(self.output_dir, 'outputs', 'data')
+    def save_results(self, results, suffix=''):
+        if suffix:
+            output_dir = os.path.join(self.output_dir, 'outputs', f'data_{suffix}')
+        else:
+            output_dir = os.path.join(self.output_dir, 'outputs', 'data')
+        
         os.makedirs(output_dir, exist_ok=True)
 
         for img_id in results.keys():
@@ -135,8 +160,23 @@ class Tester(object):
                 f.write('\n')
             f.close()
 
-    def evaluate(self):
-        results_dir = os.path.join(self.output_dir, 'outputs', 'data')
-        assert os.path.exists(results_dir)
-        result = self.dataloader.dataset.eval(results_dir=results_dir, logger=self.logger)
-        return result
+    def evaluate(self, eval_mode='both'):
+        if eval_mode == 'both':
+            # Clean 평가
+            clean_results_dir = os.path.join(self.output_dir, 'outputs', 'data_clean')
+            assert os.path.exists(clean_results_dir)
+            self.logger.info('==> CLEAN Results:')
+            clean_result = self.dataloader.dataset.eval(results_dir=clean_results_dir, logger=self.logger)
+            
+            # Foggy 평가  
+            foggy_results_dir = os.path.join(self.output_dir, 'outputs', 'data_foggy')
+            assert os.path.exists(foggy_results_dir)
+            self.logger.info('==> FOGGY Results:')
+            foggy_result = self.dataloader.dataset.eval(results_dir=foggy_results_dir, logger=self.logger)
+            
+            return {'clean': clean_result, 'foggy': foggy_result}
+        else:
+            results_dir = os.path.join(self.output_dir, 'outputs', f'data_{eval_mode}')
+            assert os.path.exists(results_dir)
+            result = self.dataloader.dataset.eval(results_dir=results_dir, logger=self.logger)
+            return result

@@ -1,4 +1,4 @@
-# MonoDETR-Weather3D# MonoDETR-Weather3D
+# MonoDETR-Weather3D
 
 **[KCC 2025 학부생논문] 악천후 환경에서 단안 3D 객체 검출 성능 향상을 위한 MonoDETR 기반 기법**
 

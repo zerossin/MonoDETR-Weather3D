@@ -2,7 +2,7 @@
 
 **[KCC 2025 학부생논문] 악천후 환경에서 단안 3D 객체 검출 성능 향상을 위한 MonoDETR 기반 기법**
 
-[![Paper](https://img.shields.io/badge/Paper-Google_Drive-blue)](https://drive.google.com/your-paper-link)
+[![Paper](https://img.shields.io/badge/Paper-Google_Drive-blue)](https://drive.google.com/file/d/1Q4lyy8d4H-H3c0bjM641lMbdLVj5os8K/view?usp=sharing)
 [![License](https://img.shields.io/badge/License-Academic-green)]()
 
 ## 프로젝트 개요

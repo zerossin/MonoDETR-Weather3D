@@ -2,7 +2,7 @@
 
 **[KCC 2025 학부생논문] 악천후 환경에서 단안 3D 객체 검출 성능 향상을 위한 MonoDETR 기반 기법**
 
-**[Kim Min Soo](https://github.com/pulqum)**\*, **Kim Seung Han**, **[Shin Min Ki](https://github.com/mk-shin01)**, **[Lee Seo Hyun](https://github.com/seohyunlee-coding)**, **Kim Jung Uk**†
+**[Kim Min Soo](https://github.com/zerossin)**\*, **Kim Seung Han**, **[Shin Min Ki](https://github.com/mk-shin01)**, **[Lee Seo Hyun](https://github.com/seohyunlee-coding)**, **Kim Jung Uk**†
 
 *Department of Computer Science and Engineering, Kyung Hee University*
 
